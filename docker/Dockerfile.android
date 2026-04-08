@@ -1,0 +1,77 @@
+FROM eclipse-temurin:17-jdk-jammy
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System deps
+RUN apt-get update && apt-get install -y \
+    curl wget git unzip \
+    build-essential pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js 22
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Android SDK
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_SDK_ROOT=$ANDROID_HOME
+ENV PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+
+RUN mkdir -p $ANDROID_HOME/cmdline-tools && \
+    wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip && \
+    unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools && \
+    mv /tmp/cmdtools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest && \
+    rm -rf /tmp/cmdtools /tmp/cmdtools.zip
+
+RUN yes | sdkmanager --licenses && \
+    sdkmanager \
+        "platforms;android-34" \
+        "build-tools;34.0.0" \
+        "platform-tools" \
+        "ndk;27.0.12077973"
+
+ENV NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973
+
+# Rust
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable --no-modify-path && \
+    rustup target add \
+        aarch64-linux-android \
+        armv7-linux-androideabi \
+        i686-linux-android \
+        x86_64-linux-android
+
+# Tauri CLI
+RUN cargo install tauri-cli --version "^2" --locked
+
+WORKDIR /app
+
+# Generate a debug keystore for signing (safe for sideloading; replace with your
+# own keystore + env vars for Play Store releases).
+RUN keytool -genkeypair -v \
+    -keystore /opt/debug.keystore \
+    -alias androiddebugkey \
+    -keyalg RSA -keysize 2048 -validity 10000 \
+    -storepass android -keypass android \
+    -dname "CN=Android Debug,O=Android,C=US" 2>/dev/null
+
+CMD ["sh", "-c", "\
+  npm ci && \
+  cargo tauri android init && \
+  MANIFEST=/app/src-tauri/gen/android/app/src/main/AndroidManifest.xml && \
+  grep -q 'android.permission.CAMERA' $MANIFEST || \
+    sed -i 's|<uses-permission android:name=\"android.permission.INTERNET\" />|<uses-permission android:name=\"android.permission.INTERNET\" />\n    <uses-permission android:name=\"android.permission.CAMERA\" />\n    <uses-feature android:name=\"android.hardware.camera\" android:required=\"false\" />|' $MANIFEST && \
+  cargo tauri android build --apk 2>&1 && \
+  APK=$(find /app/src-tauri/gen/android/app/build/outputs/apk -name '*unsigned*.apk' | head -1) && \
+  SIGNED=$(echo $APK | sed 's/-unsigned//') && \
+  $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+    --ks /opt/debug.keystore --ks-key-alias androiddebugkey \
+    --ks-pass pass:android --key-pass pass:android \
+    --out $SIGNED $APK && \
+  echo \"Signed APK: $SIGNED\" \
+"]

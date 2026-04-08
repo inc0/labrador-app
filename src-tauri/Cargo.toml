@@ -1,0 +1,33 @@
+[package]
+name = "app"
+version = "0.1.0"
+description = "Labrador — lab notebook camera app"
+authors = []
+license = "Apache-2.0"
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.4", features = [] }
+
+[dependencies]
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.10.0", features = ["unstable"] }
+tauri-plugin-log = "2"
+tauri-plugin-http = "2"
+tauri-plugin-store = "2"
+tauri-plugin-opener = "2"
+
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"

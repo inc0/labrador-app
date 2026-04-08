@@ -1,0 +1,106 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+
+  # ── Linux + Android ─────────────────────────────────────────────────────────
+  # Run via docker compose so the environment exactly matches local dev.
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Linux AppImage
+        run: docker compose run --rm linux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Android APK + AAB
+        run: docker compose run --rm android
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
+
+  # ── macOS (universal: x86-64 + Apple Silicon) ───────────────────────────────
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      # Universal binary bundles arm64 + x86_64 into one .app / .dmg.
+      # All Rust deps are statically linked; only Apple system frameworks
+      # (WebKit, AppKit) remain dynamic — this is standard for macOS apps.
+      - name: Build macOS universal DMG
+        run: cargo tauri build --target universal-apple-darwin --bundles dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+
+  # ── iOS ─────────────────────────────────────────────────────────────────────
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      # Unsigned IPA — suitable for AltStore/Sideloadly or ad-hoc distribution.
+      # For App Store submission add signing certs to repo secrets and pass
+      # --export-options-plist with a distribution profile.
+      - name: Build iOS IPA
+        run: cargo tauri ios build --no-open
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: src-tauri/gen/apple/build/arm64/*.ipa

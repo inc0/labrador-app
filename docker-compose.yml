@@ -1,0 +1,43 @@
+services:
+
+  # ── Linux (x86-64) ────────────────────────────────────────────────────────────
+  # Outputs: src-tauri/target/release/bundle/appimage/*.AppImage
+  linux:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.linux
+    image: labrador-linux
+    volumes:
+      - .:/app
+      - node-linux:/app/node_modules
+      - cargo-linux:/usr/local/cargo/registry
+      - target-linux:/app/src-tauri/target
+
+  # ── Android ───────────────────────────────────────────────────────────────────
+  # Outputs: src-tauri/gen/android/app/build/outputs/{apk,bundle}/
+  android:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.android
+    image: labrador-android
+    volumes:
+      - .:/app
+      - node-android:/app/node_modules
+      - cargo-android:/usr/local/cargo/registry
+      - target-android:/app/src-tauri/target
+      - gradle:/root/.gradle
+    environment:
+      ANDROID_HOME: /opt/android-sdk
+      NDK_HOME: /opt/android-sdk/ndk/27.0.12077973
+
+  # ── macOS + iOS ───────────────────────────────────────────────────────────────
+  # Require Xcode — handled by .github/workflows/build.yml on macOS runners.
+
+volumes:
+  node-linux:
+  node-android:
+  cargo-linux:
+  cargo-android:
+  target-linux:
+  target-android:
+  gradle:

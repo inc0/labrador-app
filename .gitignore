@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Frontend build output
+dist/
+dist-ssr/
+
+# Vite local env overrides
+*.local
+
+# Rust / Tauri build artifacts (also covered by src-tauri/.gitignore)
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Android build outputs — keep project structure, ignore compiled artifacts
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/build/
+src-tauri/gen/android/local.properties
+
+# iOS build outputs
+src-tauri/gen/apple/build/
+
+# Runtime secret store (tauri-plugin-store)
+labrador_secrets.json
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.sw?
