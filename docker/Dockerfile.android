@@ -66,6 +66,7 @@ CMD ["sh", "-c", "\
   MANIFEST=/app/src-tauri/gen/android/app/src/main/AndroidManifest.xml && \
   grep -q 'android.permission.CAMERA' $MANIFEST || \
     sed -i 's|<uses-permission android:name=\"android.permission.INTERNET\" />|<uses-permission android:name=\"android.permission.INTERNET\" />\n    <uses-permission android:name=\"android.permission.CAMERA\" />\n    <uses-feature android:name=\"android.hardware.camera\" android:required=\"false\" />|' $MANIFEST && \
+  cp /app/src-tauri/android/MainActivity.kt /app/src-tauri/gen/android/app/src/main/java/dev/labrador/app/MainActivity.kt && \
   cargo tauri android build --apk 2>&1 && \
   APK=$(find /app/src-tauri/gen/android/app/build/outputs/apk -name '*unsigned*.apk' | head -1) && \
   SIGNED=$(echo $APK | sed 's/-unsigned//') && \

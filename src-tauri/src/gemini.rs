@@ -104,6 +104,20 @@ impl GeminiClient {
         Ok(text.trim().to_string())
     }
 
+    /// Transcribe a spoken-word audio recording to plain text.
+    pub async fn transcribe_audio(&self, bytes: &[u8], mime: &str) -> Result<String> {
+        self.complete(
+            "You are an accurate speech transcription engine. Rules:\n\
+             - Transcribe all spoken words faithfully.\n\
+             - Preserve structure: if the speaker enumerates items, use bullet points.\n\
+             - Remove filler words (um, uh, like) and obvious false starts.\n\
+             - Do NOT add commentary, timestamps, or speaker labels.\n\
+             - Output plain text only.",
+            "Transcribe this audio recording.",
+            Some((bytes, mime)),
+        ).await
+    }
+
     /// Take combined transcribed text and return a structured note.
     pub async fn link(&self, raw_text: &str, max_concepts: usize) -> Result<LinkedNote> {
         let user_prompt = format!(

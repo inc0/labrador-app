@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { queue, view } from './stores'
+  import { onDestroy } from 'svelte'
+  import { queue, recordingsQueue, textQueue, view } from './stores'
   import type { QueuedImage } from './stores'
   import { v4 as uuidv4 } from 'uuid'
 
@@ -69,14 +70,96 @@
     queue.update(q => q.filter(img => img.id !== id))
   }
 
-  async function readBase64(file: File): Promise<string> {
+  async function readBase64(blob: Blob): Promise<string> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = () => resolve((reader.result as string).split(',')[1])
       reader.onerror = reject
-      reader.readAsDataURL(file)
+      reader.readAsDataURL(blob)
     })
   }
+
+  // ── audio recording ──────────────────────────────────────────────────────────
+  let recording = false
+  let mediaRecorder: MediaRecorder | null = null
+  let audioChunks: Blob[] = []
+  let audioStream: MediaStream | null = null
+  let elapsedMs = 0
+  let timerInterval: ReturnType<typeof setInterval> | null = null
+  let recordingError = ''
+
+  async function startRecording() {
+    recordingError = ''
+    try {
+      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      audioChunks = []
+
+      const mimeType = ['audio/webm', 'audio/ogg'].find(m => MediaRecorder.isTypeSupported(m)) ?? ''
+      mediaRecorder = mimeType
+        ? new MediaRecorder(audioStream, { mimeType })
+        : new MediaRecorder(audioStream)
+
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
+      mediaRecorder.onstop = async () => {
+        audioStream?.getTracks().forEach(t => t.stop())
+        audioStream = null
+        const mime = mediaRecorder!.mimeType || 'audio/webm'
+        const blob = new Blob(audioChunks, { type: mime })
+        const data = await readBase64(blob)
+        recordingsQueue.update(q => [...q, { id: uuidv4(), durationMs: elapsedMs, data, mime }])
+      }
+
+      elapsedMs = 0
+      timerInterval = setInterval(() => { elapsedMs += 1000 }, 1000)
+      mediaRecorder.start(1000)
+      recording = true
+    } catch (e: any) {
+      recordingError = e?.message ?? 'Microphone unavailable'
+    }
+  }
+
+  function stopRecording() {
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
+    mediaRecorder?.stop()
+    recording = false
+  }
+
+  function removeRecording(id: string) {
+    recordingsQueue.update(q => q.filter(r => r.id !== id))
+  }
+
+  // ── text input ───────────────────────────────────────────────────────────────
+  let textInputOpen = false
+  let textDraft = ''
+
+  function openTextInput() {
+    textDraft = ''
+    textInputOpen = true
+  }
+
+  function addText() {
+    const trimmed = textDraft.trim()
+    if (!trimmed) return
+    textQueue.update(q => [...q, { id: uuidv4(), text: trimmed }])
+    textInputOpen = false
+  }
+
+  function removeText(id: string) {
+    textQueue.update(q => q.filter(t => t.id !== id))
+  }
+
+  function formatTime(ms: number): string {
+    const s = Math.floor(ms / 1000)
+    return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+  }
+
+  onDestroy(() => {
+    if (timerInterval) clearInterval(timerInterval)
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+    audioStream?.getTracks().forEach(t => t.stop())
+  })
+
+  $: totalCount = $queue.length + $recordingsQueue.length + $textQueue.length
 
   async function processQueue() {
     const withData = await Promise.all(
@@ -116,6 +199,78 @@
   <canvas bind:this={canvasEl} class="hidden"></canvas>
 {/if}
 
+<!-- ── Recording overlay ─────────────────────────────────────────────────── -->
+{#if recording}
+  <div class="fixed inset-0 z-50 bg-black/95 flex flex-col items-center justify-center gap-10">
+    <!-- Pulsing record button (tap to stop) -->
+    <button class="relative flex items-center justify-center w-44 h-44" onclick={stopRecording} aria-label="Stop recording">
+      <!-- Outer ping ring -->
+      <span class="absolute inset-0 rounded-full bg-[#ff3b30]/25 animate-ping"></span>
+      <!-- Middle pulse ring -->
+      <span class="absolute inset-4 rounded-full bg-[#ff3b30]/20 animate-pulse"></span>
+      <!-- Solid circle -->
+      <span class="absolute inset-6 rounded-full bg-[#ff3b30] shadow-lg shadow-[#ff3b30]/40 flex items-center justify-center">
+        <!-- Square stop icon -->
+        <span class="w-10 h-10 rounded-lg bg-white"></span>
+      </span>
+    </button>
+
+    <!-- Timer -->
+    <p class="text-white text-5xl font-mono tabular-nums tracking-widest">{formatTime(elapsedMs)}</p>
+
+    <p class="text-white/40 text-sm">Tap to stop recording</p>
+  </div>
+{/if}
+
+<!-- ── Text input overlay ─────────────────────────────────────────────────── -->
+{#if textInputOpen}
+  <div class="fixed inset-0 z-50 bg-[#0f1117] flex flex-col">
+    <header class="flex items-center gap-3 px-4 py-3 border-b border-[#2e3147]">
+      <button
+        class="text-[#7c80a0] active:opacity-70 shrink-0"
+        onclick={() => textInputOpen = false}
+        aria-label="Cancel"
+      >
+        <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
+        </svg>
+      </button>
+      <h2 class="text-base font-semibold text-[#e2e4f0]">Add note text</h2>
+    </header>
+
+    <textarea
+      class="flex-1 bg-transparent px-4 py-4 text-[#e2e4f0] text-base placeholder-[#4a4e66] resize-none focus:outline-none leading-relaxed"
+      placeholder="Type your notes here…"
+      bind:value={textDraft}
+      autofocus
+    ></textarea>
+
+    <div class="p-4 pb-8 flex gap-3">
+      <button
+        class="flex-1 py-4 rounded-2xl font-semibold text-sm border border-[#2e3147] text-[#7c80a0] active:opacity-70"
+        onclick={() => textInputOpen = false}
+      >Cancel</button>
+      <button
+        class="flex-1 py-4 rounded-2xl font-semibold text-sm bg-[#6c8fff] text-white active:opacity-80 disabled:opacity-40"
+        disabled={!textDraft.trim()}
+        onclick={addText}
+      >Add to queue</button>
+    </div>
+  </div>
+{/if}
+
+<!-- ── Recording error toast ─────────────────────────────────────────────── -->
+{#if recordingError}
+  <div class="fixed top-16 inset-x-4 z-40 bg-[#ff3b30]/10 border border-[#ff3b30]/30 rounded-xl px-4 py-3 flex items-center gap-3">
+    <p class="text-[#ff6b6b] text-sm flex-1">{recordingError}</p>
+    <button class="text-[#ff6b6b] active:opacity-70" onclick={() => recordingError = ''}>
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
+      </svg>
+    </button>
+  </div>
+{/if}
+
 <!-- ── Main view ──────────────────────────────────────────────────────────── -->
 <div class="flex flex-col h-full">
   <header class="flex items-center justify-between px-4 py-3 border-b border-[#2e3147]">
@@ -141,10 +296,10 @@
   <!-- Capture buttons -->
   <div class="px-4 pt-4 flex gap-3">
     <button
-      class="flex-1 flex flex-col items-center gap-2 py-6 rounded-xl border-2 border-dashed border-[#2e3147] bg-[#1a1d27] active:border-[#6c8fff] active:bg-[#6c8fff]/10 transition-colors"
+      class="flex-1 flex flex-col items-center gap-2 py-5 rounded-xl border-2 border-dashed border-[#2e3147] bg-[#1a1d27] active:border-[#6c8fff] active:bg-[#6c8fff]/10 transition-colors"
       onclick={openCamera}
     >
-      <svg width="32" height="32" fill="none" stroke="#6c8fff" stroke-width="1.5" viewBox="0 0 24 24">
+      <svg width="28" height="28" fill="none" stroke="#6c8fff" stroke-width="1.5" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316z"/>
         <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0z"/>
       </svg>
@@ -153,35 +308,95 @@
 
     <label
       for="gallery-input"
-      class="flex-1 flex flex-col items-center gap-2 py-6 rounded-xl border-2 border-dashed border-[#2e3147] bg-[#1a1d27] active:border-[#6c8fff] active:bg-[#6c8fff]/10 transition-colors cursor-pointer"
+      class="flex-1 flex flex-col items-center gap-2 py-5 rounded-xl border-2 border-dashed border-[#2e3147] bg-[#1a1d27] active:border-[#6c8fff] active:bg-[#6c8fff]/10 transition-colors cursor-pointer"
       ondragover={(e) => { e.preventDefault(); dragging = true }}
       ondragleave={() => (dragging = false)}
       ondrop={(e) => { e.preventDefault(); dragging = false; addFiles(e.dataTransfer!.files) }}
     >
-      <svg width="32" height="32" fill="none" stroke="#6c8fff" stroke-width="1.5" viewBox="0 0 24 24">
+      <svg width="28" height="28" fill="none" stroke="#6c8fff" stroke-width="1.5" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0z"/>
       </svg>
       <span class="text-[#7c80a0] text-xs">Gallery</span>
     </label>
+
+    <!-- Microphone button -->
+    <button
+      class="flex-1 flex flex-col items-center gap-2 py-5 rounded-xl border-2 border-dashed border-[#2e3147] bg-[#1a1d27] active:border-[#ff3b30] active:bg-[#ff3b30]/10 transition-colors"
+      onclick={startRecording}
+    >
+      <svg width="28" height="28" fill="none" stroke="#ff3b30" stroke-width="1.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3z"/>
+      </svg>
+      <span class="text-[#7c80a0] text-xs">Record</span>
+    </button>
+
+    <!-- Text input button -->
+    <button
+      class="flex-1 flex flex-col items-center gap-2 py-5 rounded-xl border-2 border-dashed border-[#2e3147] bg-[#1a1d27] active:border-[#34d399] active:bg-[#34d399]/10 transition-colors"
+      onclick={openTextInput}
+    >
+      <svg width="28" height="28" fill="none" stroke="#34d399" stroke-width="1.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+      </svg>
+      <span class="text-[#7c80a0] text-xs">Text</span>
+    </button>
   </div>
 
   <input bind:this={galleryInput} id="gallery-input" type="file" accept="image/*" multiple class="hidden"
     onchange={(e) => addFiles((e.target as HTMLInputElement).files!)} />
 
-  <!-- Queue grid -->
-  {#if $queue.length > 0}
+  <!-- Queue grid (recordings + images) -->
+  {#if totalCount > 0}
     <div class="flex-1 overflow-y-auto px-4 pt-4">
       <div class="flex items-center justify-between mb-3">
-        <span class="text-[#7c80a0] text-sm">{$queue.length} photo{$queue.length !== 1 ? 's' : ''} queued</span>
-        <button class="text-[#ff6b6b] text-xs active:opacity-70" onclick={() => queue.set([])}>Clear all</button>
+        <span class="text-[#7c80a0] text-sm">{totalCount} item{totalCount !== 1 ? 's' : ''} queued</span>
+        <button class="text-[#ff6b6b] text-xs active:opacity-70"
+          onclick={() => { queue.set([]); recordingsQueue.set([]); textQueue.set([]) }}>Clear all</button>
       </div>
       <div class="grid grid-cols-3 gap-2">
+        <!-- Recording cards -->
+        {#each $recordingsQueue as rec (rec.id)}
+          <div class="relative aspect-square rounded-xl border border-[#ff3b30]/30 bg-[#1a1d27] flex flex-col items-center justify-center gap-1.5">
+            <svg width="28" height="28" fill="none" stroke="#ff3b30" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3z"/>
+            </svg>
+            <span class="text-[#7c80a0] text-xs font-mono">{formatTime(rec.durationMs)}</span>
+            <button
+              class="absolute top-1.5 right-1.5 w-7 h-7 rounded-full bg-[#ff6b6b] flex items-center justify-center active:opacity-70"
+              onclick={() => removeRecording(rec.id)}
+              aria-label="Remove"
+            >
+              <svg width="14" height="14" fill="none" stroke="white" stroke-width="2.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+        {/each}
+        <!-- Image thumbnails -->
         {#each $queue as img (img.id)}
           <div class="relative aspect-square rounded-xl overflow-hidden border border-[#2e3147]">
             <img src={img.dataUrl} alt="" class="w-full h-full object-cover" />
             <button
               class="absolute top-1.5 right-1.5 w-7 h-7 rounded-full bg-[#ff6b6b] flex items-center justify-center active:opacity-70"
               onclick={() => removeImage(img.id)}
+              aria-label="Remove"
+            >
+              <svg width="14" height="14" fill="none" stroke="white" stroke-width="2.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+        {/each}
+        <!-- Text cards -->
+        {#each $textQueue as txt (txt.id)}
+          <div class="relative aspect-square rounded-xl border border-[#34d399]/30 bg-[#1a1d27] flex flex-col items-center justify-center gap-1.5 px-2 overflow-hidden">
+            <svg width="20" height="20" fill="none" stroke="#34d399" stroke-width="1.5" viewBox="0 0 24 24" class="shrink-0">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>
+            <p class="text-[#7c80a0] text-[10px] leading-tight text-center line-clamp-3 w-full">{txt.text}</p>
+            <button
+              class="absolute top-1.5 right-1.5 w-7 h-7 rounded-full bg-[#ff6b6b] flex items-center justify-center active:opacity-70"
+              onclick={() => removeText(txt.id)}
               aria-label="Remove"
             >
               <svg width="14" height="14" fill="none" stroke="white" stroke-width="2.5" viewBox="0 0 24 24">
@@ -199,11 +414,11 @@
   <div class="p-4 pb-8">
     <button
       class="w-full py-4 rounded-2xl font-semibold text-base transition-opacity
-             {$queue.length === 0 ? 'bg-[#2e3147] text-[#7c80a0] cursor-not-allowed' : 'bg-[#6c8fff] text-white active:opacity-80'}"
-      disabled={$queue.length === 0}
+             {totalCount === 0 ? 'bg-[#2e3147] text-[#7c80a0] cursor-not-allowed' : 'bg-[#6c8fff] text-white active:opacity-80'}"
+      disabled={totalCount === 0}
       onclick={processQueue}
     >
-      Process {$queue.length > 0 ? $queue.length : ''} photo{$queue.length !== 1 ? 's' : ''}
+      Process {totalCount > 0 ? totalCount : ''} item{totalCount !== 1 ? 's' : ''}
     </button>
   </div>
 </div>

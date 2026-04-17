@@ -1,23 +1,34 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { queue, view, processed, editedMarkdown, editedTitle, pendingImages } from './stores'
+  import { queue, recordingsQueue, textQueue, view, processed, editedMarkdown, editedTitle, pendingImages } from './stores'
   import { cmd } from './tauri'
 
-  let status = 'Classifying images…'
+  let status = ''
   let error = ''
 
   onMount(async () => {
     try {
       const images = $queue.map(img => ({ data: img.data, mime: img.mime }))
+      const recordings = $recordingsQueue.map(r => ({ data: r.data, mime: r.mime }))
+      const texts = $textQueue.map(t => t.text)
 
-      status = 'Transcribing notes…'
-      const result = await cmd.processImages(images)
+      if (recordings.length > 0 && images.length === 0) {
+        status = 'Transcribing audio…'
+      } else if (recordings.length > 0) {
+        status = 'Transcribing audio & classifying images…'
+      } else {
+        status = 'Classifying images…'
+      }
+
+      const result = await cmd.processImages(images, recordings, texts)
 
       pendingImages.set(images)
       processed.set(result)
       editedMarkdown.set(result.markdown)
       editedTitle.set(result.note.title)
       queue.set([])
+      recordingsQueue.set([])
+      textQueue.set([])
       view.set('preview')
     } catch (e: any) {
       error = e?.toString() ?? 'Unknown error'
